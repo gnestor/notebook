@@ -340,6 +340,7 @@ define([
     CodeCell.prototype.get_callbacks = function () {
         var that = this;
         return {
+            clear_on_done: false,
             shell : {
                 reply : $.proxy(this._handle_execute_reply, this),
                 payload : {
@@ -357,7 +358,7 @@ define([
                     that.output_area.handle_clear_output.apply(that.output_area, arguments);
                 }, 
             },
-            input : $.proxy(this._handle_input_request, this)
+            input : $.proxy(this._handle_input_request, this),
         };
     };
     
@@ -534,7 +535,11 @@ define([
         var outputs = this.output_area.toJSON();
         data.outputs = outputs;
         data.metadata.trusted = this.output_area.trusted;
-        data.metadata.collapsed = this.output_area.collapsed;
+        if (this.output_area.collapsed) {
+            data.metadata.collapsed = this.output_area.collapsed;
+        } else {
+            delete data.metadata.collapsed;
+        }
         if (this.output_area.scroll_state === 'auto') {
             delete data.metadata.scrolled;
         } else {
