@@ -6,6 +6,7 @@ require([
     'termjs',
     'base/js/utils',
     'base/js/page',
+    'auth/js/loginwidget',
     'services/config',
     'terminal/js/terminado',
     'custom',
@@ -14,18 +15,24 @@ require([
     termjs,
     utils,
     page,
+    loginwidget,
     configmod,
     terminado
     ){
     "use strict";
     page = new page.Page();
+    
+    var common_options = {
+        base_url : utils.get_body_data("baseUrl"),
+    };
 
-    var config = new configmod.ConfigSection('terminal',
-                                     {base_url: utils.get_body_data('baseUrl')});
+    var config = new configmod.ConfigSection('terminal', common_options);
     config.load();
-    var common_config = new configmod.ConfigSection('common', 
-                                    {base_url: utils.get_body_data('baseUrl')});
+    var common_config = new configmod.ConfigSection('common', common_options);
     common_config.load();
+
+    var login_widget = new loginwidget.LoginWidget('span#login_widget', common_options);
+
     // Test size: 25x80
     var termRowHeight = function(){ return 1.00 * $("#dummy-screen")[0].offsetHeight / 25;};
         // 1.02 here arrived at by trial and error to make the spacing look right
