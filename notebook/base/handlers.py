@@ -40,9 +40,15 @@ non_alphanum = re.compile(r'[^A-Za-z0-9]')
 
 sys_info = json.dumps(get_sys_info())
 
+def log():
+    if Application.initialized():
+        return Application.instance().log
+    else:
+        return app_log
+
 class AuthenticatedHandler(web.RequestHandler):
     """A RequestHandler with an authenticated user."""
-    
+
     @property
     def content_security_policy(self):
         """The default Content-Security-Policy header
@@ -78,6 +84,23 @@ class AuthenticatedHandler(web.RequestHandler):
         if self.login_handler is None:
             return 'anonymous'
         return self.login_handler.get_user(self)
+
+    def skip_check_origin(self):
+        """Ask my login_handler if I should skip the origin_check
+        
+        For example: in the default LoginHandler, if a request is token-authenticated,
+        origin checking should be skipped.
+        """
+        if self.login_handler is None or not hasattr(self.login_handler, 'should_check_origin'):
+            return False
+        return not self.login_handler.should_check_origin(self)
+
+    @property
+    def token_authenticated(self):
+        """Have I been authenticated with a token?"""
+        if self.login_handler is None or not hasattr(self.login_handler, 'is_token_authenticated'):
+            return False
+        return self.login_handler.is_token_authenticated(self)
 
     @property
     def cookie_name(self):
@@ -142,10 +165,7 @@ class IPythonHandler(AuthenticatedHandler):
     @property
     def log(self):
         """use the IPython log by default, falling back on tornado's logger"""
-        if Application.initialized():
-            return Application.instance().log
-        else:
-            return app_log
+        return log()
 
     @property
     def jinja_template_vars(self):
@@ -264,15 +284,20 @@ class IPythonHandler(AuthenticatedHandler):
         Copied from WebSocket with changes:
 
         - allow unspecified host/origin (e.g. scripts)
+        - allow token-authenticated requests
         """
-        if self.allow_origin == '*':
+        if self.allow_origin == '*' or self.skip_check_origin():
             return True
 
         host = self.request.headers.get("Host")
         origin = self.request.headers.get("Origin")
 
-        # If no header is provided, assume it comes from a script/curl.
-        # We are only concerned with cross-site browser stuff here.
+        # If no header is provided, let the request through.
+        # Origin can be None for:
+        # - same-origin (IE, Firefox)
+        # - Cross-site POST form (IE, Firefox)
+        # - Scripts
+        # The cross-site POST (XSRF) case is handled by tornado's xsrf_token
         if origin is None or host is None:
             return True
 
@@ -292,11 +317,19 @@ class IPythonHandler(AuthenticatedHandler):
             # No CORS headers deny the request
             allow = False
         if not allow:
-            self.log.warn("Blocking Cross Origin API request.  Origin: %s, Host: %s",
-                origin, host,
+            self.log.warning("Blocking Cross Origin API request for %s.  Origin: %s, Host: %s",
+                self.request.path, origin, host,
             )
         return allow
-    
+
+    def check_xsrf_cookie(self):
+        """Bypass xsrf cookie checks when token-authenticated"""
+        if self.token_authenticated or self.settings.get('disable_check_xsrf', False):
+            # Token-authenticated requests do not need additional XSRF-check
+            # Servers without authentication are vulnerable to XSRF
+            return
+        return super(IPythonHandler, self).check_xsrf_cookie()
+
     #---------------------------------------------------------------
     # template rendering
     #---------------------------------------------------------------
@@ -324,6 +357,9 @@ class IPythonHandler(AuthenticatedHandler):
             contents_js_source=self.contents_js_source,
             version_hash=self.version_hash,
             ignore_minified_js=self.ignore_minified_js,
+            xsrf_form_html=self.xsrf_form_html,
+            token=self.token,
+            xsrf_token=self.xsrf_token.decode('utf8'),
             **self.jinja_template_vars
         )
     
@@ -346,6 +382,7 @@ class IPythonHandler(AuthenticatedHandler):
         exc_info = kwargs.get('exc_info')
         message = ''
         status_message = responses.get(status_code, 'Unknown HTTP Error')
+        exception = '(unknown)'
         if exc_info:
             exception = exc_info[1]
             # get the custom message, if defined
@@ -399,7 +436,7 @@ class APIHandler(IPythonHandler):
         return super(APIHandler, self).finish(*args, **kwargs)
 
     def options(self, *args, **kwargs):
-        self.set_header('Access-Control-Allow-Headers', 'accept, content-type')
+        self.set_header('Access-Control-Allow-Headers', 'accept, content-type, authorization')
         self.set_header('Access-Control-Allow-Methods',
                         'GET, PUT, POST, PATCH, DELETE, OPTIONS')
         self.finish()
@@ -536,6 +573,9 @@ class FileFindHandler(IPythonHandler, web.StaticFileHandler):
                 return ''
             
             cls._static_paths[path] = abspath
+            
+
+            log().debug("Path %s served from %s"%(path, abspath))
             return abspath
     
     def validate_absolute_path(self, root, absolute_path):

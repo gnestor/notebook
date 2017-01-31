@@ -79,7 +79,7 @@ from jupyter_client.session import Session
 from nbformat.sign import NotebookNotary
 from traitlets import (
     Dict, Unicode, Integer, List, Bool, Bytes, Instance,
-    TraitError, Type, Float
+    TraitError, Type, Float,
 )
 from ipython_genutils import py3compat
 from jupyter_core.paths import jupyter_runtime_dir, jupyter_path
@@ -192,6 +192,8 @@ class NotebookWebApplication(web.Application):
             login_handler_class=ipython_app.login_handler_class,
             logout_handler_class=ipython_app.logout_handler_class,
             password=ipython_app.password,
+            xsrf_cookies=True,
+            disable_check_xsrf=ipython_app.disable_check_xsrf,
 
             # managers
             kernel_manager=kernel_manager,
@@ -517,10 +519,11 @@ class NotebookApp(JupyterApp):
                 self.cookie_secret_file
             )
 
-    token = Unicode(config=True,
+    token = Unicode('<generated>', config=True,
         help="""Token used for authenticating first-time connections to the server.
 
-        Only used when no password is enabled.
+        When no password is enabled,
+        the default is to generate a new, random token.
 
         Setting to an empty string disables authentication altogether, which is NOT RECOMMENDED.
         """
@@ -532,13 +535,20 @@ class NotebookApp(JupyterApp):
         Once used, this token cannot be used again.
         """
     )
+    
+    _token_generated = True
 
     def _token_default(self):
         if self.password:
             # no token if password is enabled
+            self._token_generated = False
             return u''
         else:
+            self._token_generated = True
             return binascii.hexlify(os.urandom(24)).decode('ascii')
+
+    def _token_changed(self, name, old, new):
+        self._token_generated = False
 
     password = Unicode(u'', config=True,
                       help="""Hashed password to use for web authentication.
@@ -549,6 +559,22 @@ class NotebookApp(JupyterApp):
 
                       The string should be of the form type:salt:hashed-password.
                       """
+    )
+
+    disable_check_xsrf = Bool(False, config=True,
+        help="""Disable cross-site-request-forgery protection
+
+        Jupyter notebook 4.3.1 introduces protection from cross-site request forgeries,
+        requiring API requests to either:
+
+        - originate from pages served by this server (validated with XSRF cookie and token), or
+        - authenticate with a token
+
+        Some anonymous compute resources still desire the ability to run code,
+        completely without authentication.
+        These services can disable all authentication and security checks,
+        with the full knowledge of what that implies.
+        """
     )
 
     open_browser = Bool(True, config=True,
@@ -976,6 +1002,12 @@ class NotebookApp(JupyterApp):
     @property
     def display_url(self):
         ip = self.ip if self.ip else '[all ip addresses on your system]'
+        url = self._url(ip)
+        if self.token:
+            # Don't log full token if it came from config
+            token = self.token if self._token_generated else '...'
+            url = url_concat(url, {'token': token})
+        return url
         query = '?token=%s' % self.token if self.token else ''
         return self._url(ip) + query
 
@@ -1194,7 +1226,17 @@ class NotebookApp(JupyterApp):
                 b = lambda : browser.open(url_path_join(self.connection_url, uri),
                                           new=2)
                 threading.Thread(target=b).start()
-        
+                
+        if self.token and self._token_generated:
+            # log full URL with generated token, so there's a copy/pasteable link
+            # with auth info.
+            self.log.critical('\n'.join([
+                '\n',
+                'Copy/paste this URL into your browser when you connect for the first time,',
+                'to login with a token:',
+                '    %s' % url_concat(self.connection_url, {'token': self.token}),
+             ]))
+
         self.io_loop = ioloop.IOLoop.current()
         if sys.platform.startswith('win'):
             # add no-op to wake every 5s
@@ -1250,4 +1292,3 @@ def list_running_servers(runtime_dir=None):
 #-----------------------------------------------------------------------------
 
 main = launch_new_instance = NotebookApp.launch_instance
-
